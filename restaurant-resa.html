@@ -1,0 +1,1258 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Le Plateau Doré — Système de Réservation</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#080c14;color:#e2e8f0;font-family:'Inter',system-ui,sans-serif;min-height:100vh}
+    ::-webkit-scrollbar{width:5px;background:#080c14}
+    ::-webkit-scrollbar-thumb{background:#1c2b3f;border-radius:3px}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    @keyframes slideIn{from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    @keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+    input[type="datetime-local"]::-webkit-calendar-picker-indicator{filter:invert(.6)}
+    select option{background:#0e1520}
+    .blocked{cursor:not-allowed!important;opacity:.55!important;filter:grayscale(.4)}
+    .blocked:hover{transform:none!important;box-shadow:none!important}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ═══════════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════════
+const RESTAURANT_NAME = "Le Plateau Doré";
+const PRIX = 8500; // FCFA par personne
+const SYNC_MS = 6000;
+
+const TABLES_DEF = [
+  {id:1,numero:1,capacite:2,zone:"Terrasse"},
+  {id:2,numero:2,capacite:2,zone:"Terrasse"},
+  {id:3,numero:3,capacite:4,zone:"Terrasse"},
+  {id:4,numero:4,capacite:4,zone:"Terrasse"},
+  {id:5,numero:5,capacite:4,zone:"Salle principale"},
+  {id:6,numero:6,capacite:4,zone:"Salle principale"},
+  {id:7,numero:7,capacite:6,zone:"Salle principale"},
+  {id:8,numero:8,capacite:6,zone:"Salle principale"},
+  {id:9,numero:9,capacite:8,zone:"Salle principale"},
+  {id:10,numero:10,capacite:8,zone:"Salle principale"},
+  {id:11,numero:11,capacite:2,zone:"Bar"},
+  {id:12,numero:12,capacite:2,zone:"Bar"},
+  {id:13,numero:13,capacite:4,zone:"Bar"},
+  {id:14,numero:14,capacite:6,zone:"VIP"},
+  {id:15,numero:15,capacite:10,zone:"VIP"},
+];
+
+const C = {
+  bg:"#080c14", surface:"#0e1520", card:"#131d2e", border:"#1c2b3f",
+  gold:"#d4a843", goldLight:"#f0c060", goldDim:"#8a6a20",
+  libre:"#10b981", occupee:"#ef4444", bientot:"#f59e0b",
+  text:"#e2e8f0", muted:"#64748b",
+  purple:"#8b5cf6", blue:"#3b82f6", red:"#ef4444",
+};
+
+// ═══════════════════════════════════════════════════════════
+// STORAGE (localStorage — données persistantes)
+// ═══════════════════════════════════════════════════════════
+const LS = {
+  get(k){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):null; }catch{return null;} },
+  set(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch{} },
+};
+
+// ═══════════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════════
+function genId(p=""){ return p+Math.random().toString(36).slice(2,10).toUpperCase(); }
+function genKey(){ return "rk_live_"+Array.from({length:4},()=>Math.random().toString(36).slice(2,8)).join("_"); }
+function fcfa(n){ return Number(n).toLocaleString("fr-FR")+" F CFA"; }
+function fmt(d,m="time"){
+  if(!d) return "—";
+  const dt=new Date(d);
+  if(m==="time") return dt.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
+  if(m==="date") return dt.toLocaleDateString("fr-FR",{day:"2-digit",month:"short",year:"numeric"});
+  if(m==="full") return dt.toLocaleString("fr-FR",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+  return dt.toISOString();
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOGIQUE STATUT TABLE — Source unique de vérité
+// ═══════════════════════════════════════════════════════════
+function getTableStatut(tableId, reservations, now) {
+  const ct = new Date(now);
+
+  // Cherche une réservation ACTIVE (en cours RIGHT NOW)
+  const active = reservations.find(r => {
+    if (r.tableId !== tableId || r.statut === "terminee") return false;
+    const debut = new Date(r.dateHeure);
+    const fin   = new Date(r.dateHeureFin);
+    return debut <= ct && ct < fin;
+  });
+  if (active) return { statut: "occupee", reservation: active, peutReserver: false };
+
+  // Cherche une réservation dans les 30 prochaines minutes
+  const bientot = reservations.find(r => {
+    if (r.tableId !== tableId || r.statut === "terminee") return false;
+    const debut = new Date(r.dateHeure);
+    const diff  = (debut - ct) / 60000;
+    return diff > 0 && diff <= 30;
+  });
+  if (bientot) return { statut: "bientot", reservation: bientot, peutReserver: false };
+
+  return { statut: "libre", reservation: null, peutReserver: true };
+}
+
+// ═══════════════════════════════════════════════════════════
+// VÉRIFICATEUR DE CONFLIT — utilisé partout (dashboard + API)
+// ═══════════════════════════════════════════════════════════
+function verifierDisponibilite(tableId, dateHeureDebut, dureeMin, reservations) {
+  const debut = new Date(dateHeureDebut);
+  const fin   = new Date(debut.getTime() + dureeMin * 60000);
+
+  const conflit = reservations.find(r => {
+    if (r.tableId !== parseInt(tableId) || r.statut === "terminee") return false;
+    const rDebut = new Date(r.dateHeure);
+    const rFin   = new Date(r.dateHeureFin);
+    // Chevauchement : les deux intervalles se croisent
+    return debut < rFin && fin > rDebut;
+  });
+
+  return { disponible: !conflit, conflit };
+}
+
+// ═══════════════════════════════════════════════════════════
+// API ENGINE — authentification stricte par clé
+// ═══════════════════════════════════════════════════════════
+function processApiCall(method, path, body, apiKeys, reservations, now) {
+  // ── 1. AUTHENTIFICATION OBLIGATOIRE ──────────────────────
+  const authKey = body?._apiKey || body?.apiKey || null;
+  if (!authKey) {
+    return {
+      status: 401,
+      data: { error: "Clé API manquante. Ajoutez 'x-api-key' dans vos headers.", code: "API_KEY_REQUIRED" }
+    };
+  }
+  const validKey = apiKeys.find(k => k.key === authKey && k.active);
+  if (!validKey) {
+    return {
+      status: 401,
+      data: { error: "Clé API invalide ou désactivée. Accès refusé.", code: "INVALID_API_KEY" }
+    };
+  }
+
+  // ── 2. ROUTING ───────────────────────────────────────────
+  const ct = new Date(now);
+  let status = 200, result = {};
+
+  // GET /tables
+  if (method === "GET" && path === "/tables") {
+    result = {
+      tables: TABLES_DEF.map(t => {
+        const { statut, reservation, peutReserver } = getTableStatut(t.id, reservations, ct);
+        return {
+          id: t.id, numero: t.numero, capacite: t.capacite, zone: t.zone,
+          statut,
+          disponible: peutReserver,
+          reservation: reservation ? {
+            id: reservation.id, client: reservation.client,
+            heureDebut: reservation.dateHeure, heureFin: reservation.dateHeureFin,
+            personnes: reservation.personnes
+          } : null
+        };
+      }),
+      resume: {
+        libres: TABLES_DEF.filter(t => getTableStatut(t.id, reservations, ct).statut === "libre").length,
+        occupees: TABLES_DEF.filter(t => getTableStatut(t.id, reservations, ct).statut === "occupee").length,
+        bientot: TABLES_DEF.filter(t => getTableStatut(t.id, reservations, ct).statut === "bientot").length,
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  // GET /tables/disponibles
+  else if (method === "GET" && path === "/tables/disponibles") {
+    const libres = TABLES_DEF.filter(t => getTableStatut(t.id, reservations, ct).peutReserver);
+    result = {
+      tables: libres.map(t => ({ id: t.id, numero: t.numero, capacite: t.capacite, zone: t.zone })),
+      count: libres.length,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  // POST /reservations
+  else if (method === "POST" && path === "/reservations") {
+    const { client, telephone, personnes, tableId, dateHeure, dureeMinutes = 90 } = body;
+
+    // Validation des champs
+    if (!client || !telephone || !personnes || !tableId || !dateHeure) {
+      status = 400;
+      result = { error: "Champs obligatoires manquants : client, telephone, personnes, tableId, dateHeure.", code: "MISSING_FIELDS" };
+    } else {
+      const tid = parseInt(tableId);
+      const table = TABLES_DEF.find(t => t.id === tid);
+      if (!table) {
+        status = 404;
+        result = { error: `Table ${tableId} introuvable.`, code: "TABLE_NOT_FOUND" };
+      } else {
+        // ── VÉRIFICATION STRICTE DE DISPONIBILITÉ ──────────
+        const { statut: statutActuel } = getTableStatut(tid, reservations, ct);
+        const { disponible, conflit } = verifierDisponibilite(tid, dateHeure, dureeMinutes, reservations);
+
+        if (!disponible) {
+          status = 409;
+          result = {
+            error: `🚫 RÉSERVATION IMPOSSIBLE — Table ${table.numero} est ${statutActuel === "occupee" ? "actuellement occupée" : "déjà réservée"} sur ce créneau.`,
+            code: "TABLE_NOT_AVAILABLE",
+            table: { id: tid, numero: table.numero, statut: statutActuel },
+            conflit: conflit ? { client: conflit.client, de: conflit.dateHeure, a: conflit.dateHeureFin } : null,
+          };
+        } else {
+          // Capacité
+          if (parseInt(personnes) > table.capacite) {
+            status = 422;
+            result = { error: `Table ${table.numero} a une capacité max de ${table.capacite} personnes.`, code: "CAPACITY_EXCEEDED" };
+          } else {
+            const debut = new Date(dateHeure);
+            const fin   = new Date(debut.getTime() + dureeMinutes * 60000);
+            const newR  = {
+              id: genId("R"), tableId: tid, client, telephone,
+              personnes: parseInt(personnes), statut: "confirmee",
+              dateHeure: debut.toISOString(), dateHeureFin: fin.toISOString(),
+              createdAt: new Date().toISOString(), source: "api",
+            };
+            status  = 201;
+            result  = {
+              success: true,
+              message: `Table ${table.numero} réservée avec succès pour ${client}.`,
+              reservation: newR,
+              _newResa: newR,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // PUT /reservations/{id}/terminer
+  else if (method === "PUT" && /^\/reservations\/.+\/terminer$/.test(path)) {
+    const id   = path.split("/")[2];
+    const resa = reservations.find(r => r.id === id);
+    if (!resa) {
+      status = 404;
+      result = { error: "Réservation introuvable.", code: "NOT_FOUND" };
+    } else if (resa.statut === "terminee") {
+      status = 409;
+      result = { error: "Cette réservation est déjà terminée.", code: "ALREADY_TERMINATED" };
+    } else {
+      result = {
+        success: true,
+        message: `Table ${resa.tableId} libérée avec succès.`,
+        tableId: resa.tableId,
+        reservationId: id,
+        libereeA: new Date().toISOString(),
+        _terminerId: id,
+      };
+    }
+  }
+
+  else {
+    status = 404;
+    result = { error: `Endpoint '${method} ${path}' introuvable.`, code: "ENDPOINT_NOT_FOUND" };
+  }
+
+  return { status, data: result, _key: validKey.name };
+}
+
+// ═══════════════════════════════════════════════════════════
+// COMPOSANTS UI
+// ═══════════════════════════════════════════════════════════
+function Badge({ s }) {
+  const cfg = {
+    libre:    [C.libre,  "#052e16", "Libre"],
+    occupee:  [C.occupee,"#450a0a", "Occupée"],
+    bientot:  [C.bientot,"#431407", "≤ 30 min"],
+    terminee: [C.muted,  "#1e293b", "Terminée"],
+  };
+  const [clr, bg, label] = cfg[s] || cfg.libre;
+  return (
+    <span style={{background:bg,color:clr,border:`1px solid ${clr}44`,borderRadius:20,
+      padding:"2px 10px",fontSize:11,fontWeight:700,letterSpacing:.5,
+      display:"inline-flex",alignItems:"center",gap:5}}>
+      <span style={{width:6,height:6,borderRadius:"50%",background:clr,display:"inline-block",
+        animation:s!=="libre"&&s!=="terminee"?"pulse 1.5s infinite":"none"}}/>
+      {label}
+    </span>
+  );
+}
+
+function KPI({ label, value, color, sub }) {
+  return (
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:"18px 20px",flex:1,minWidth:130}}>
+      <div style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>{label}</div>
+      <div style={{color:color||C.text,fontSize:30,fontWeight:900,lineHeight:1}}>{value}</div>
+      {sub && <div style={{color:C.muted,fontSize:11,marginTop:4}}>{sub}</div>}
+    </div>
+  );
+}
+
+const iBase = {width:"100%",background:"#080c14",border:`1px solid #1c2b3f`,
+  borderRadius:10,padding:"10px 14px",color:"#e2e8f0",fontSize:14,
+  outline:"none",boxSizing:"border-box",fontFamily:"inherit"};
+
+function Inp({ label, error, ...p }) {
+  return (
+    <div style={{marginBottom:14}}>
+      <label style={{display:"block",color:C.muted,fontSize:11,fontWeight:700,
+        letterSpacing:.8,marginBottom:6,textTransform:"uppercase"}}>{label}</label>
+      <input {...p} style={{...iBase,borderColor:error?"#ef4444":"#1c2b3f",...p.style}}
+        onFocus={e=>e.target.style.borderColor=error?"#ef4444":C.gold}
+        onBlur={e=>e.target.style.borderColor=error?"#ef4444":"#1c2b3f"}/>
+      {error && <div style={{color:"#f87171",fontSize:11,marginTop:4}}>⚠ {error}</div>}
+    </div>
+  );
+}
+
+function Sel({ label, children, error, ...p }) {
+  return (
+    <div style={{marginBottom:14}}>
+      <label style={{display:"block",color:C.muted,fontSize:11,fontWeight:700,
+        letterSpacing:.8,marginBottom:6,textTransform:"uppercase"}}>{label}</label>
+      <select {...p} style={{...iBase,appearance:"none",
+        backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
+        backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center",
+        paddingRight:36,borderColor:error?"#ef4444":"#1c2b3f",...p.style}}
+        onFocus={e=>e.target.style.borderColor=error?"#ef4444":C.gold}
+        onBlur={e=>e.target.style.borderColor=error?"#ef4444":"#1c2b3f"}>
+        {children}
+      </select>
+      {error && <div style={{color:"#f87171",fontSize:11,marginTop:4}}>⚠ {error}</div>}
+    </div>
+  );
+}
+
+function Btn({ children, variant="primary", ...p }) {
+  const vs = {
+    primary: {background:`linear-gradient(135deg,${C.gold},${C.goldLight})`,color:"#080c14",border:"none",fontWeight:900},
+    danger:  {background:"#450a0a",color:"#f87171",border:"1px solid #ef444466",fontWeight:700},
+    ghost:   {background:C.card,color:C.muted,border:`1px solid ${C.border}`,fontWeight:600},
+    success: {background:"#052e16",color:"#4ade80",border:`1px solid ${C.libre}55`,fontWeight:700},
+    blue:    {background:"#0c1a2e",color:"#60a5fa",border:"1px solid #1e3a5f",fontWeight:700},
+  };
+  return (
+    <button {...p} style={{...vs[variant],borderRadius:10,padding:"10px 20px",fontSize:14,
+      cursor:p.disabled?"not-allowed":"pointer",transition:"opacity .15s",
+      opacity:p.disabled?.5:1,...p.style}}
+      onMouseEnter={e=>{if(!p.disabled)e.currentTarget.style.opacity=".85"}}
+      onMouseLeave={e=>e.currentTarget.style.opacity=p.disabled?"0.5":"1"}>
+      {children}
+    </button>
+  );
+}
+
+function Modal({ children, onClose, wide }) {
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:1000,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:16,backdropFilter:"blur(6px)"}}
+      onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.surface,border:`1px solid ${C.border}`,
+        borderRadius:20,padding:28,width:"100%",maxWidth:wide?820:500,maxHeight:"92vh",
+        overflowY:"auto",boxShadow:"0 30px 80px rgba(0,0,0,.75)",animation:"slideIn .25s ease"}}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SecTitle({ children }) {
+  return (
+    <div style={{color:C.gold,fontWeight:900,fontSize:20,marginBottom:20,
+      display:"flex",alignItems:"center",gap:10}}>
+      {children}
+      <div style={{flex:1,height:1,background:`linear-gradient(to right,${C.goldDim}55,transparent)`,marginLeft:8}}/>
+    </div>
+  );
+}
+
+// ── TABLE CARD ──────────────────────────────────────────────
+function TableCard({ table, statut, reservation, onClick }) {
+  const [hov, setHov] = useState(false);
+  const isBlocked = statut !== "libre";
+  const cfg = {
+    libre:   {border:C.libre,  glow:"rgba(16,185,129,.15)"},
+    occupee: {border:C.occupee,glow:"rgba(239,68,68,.15)"},
+    bientot: {border:C.bientot,glow:"rgba(245,158,11,.15)"},
+  }[statut] || {border:C.libre,glow:"transparent"};
+
+  return (
+    <div
+      onClick={isBlocked ? null : onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      className={isBlocked ? "blocked" : ""}
+      style={{
+        background: C.card,
+        border: `2px solid ${cfg.border}`,
+        borderRadius: 14,
+        padding: "14px 12px",
+        cursor: isBlocked ? "not-allowed" : "pointer",
+        transition: "all .2s",
+        boxShadow: !isBlocked && hov ? `0 8px 28px ${cfg.glow}` : `0 2px 10px ${cfg.glow}`,
+        transform: !isBlocked && hov ? "translateY(-3px)" : "translateY(0)",
+        position: "relative",
+        minHeight: 118,
+        opacity: isBlocked ? .6 : 1,
+      }}>
+      {/* Bandeau BLOQUÉ */}
+      {isBlocked && (
+        <div style={{position:"absolute",top:6,right:6,
+          background: statut === "occupee" ? "#450a0a" : "#431407",
+          color: statut === "occupee" ? "#f87171" : "#fb923c",
+          fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6,letterSpacing:.5}}>
+          🔒 {statut === "occupee" ? "OCCUPÉE" : "RÉSERVÉE"}
+        </div>
+      )}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <div style={{color:C.text,fontWeight:900,fontSize:20,letterSpacing:-.5}}>T{table.numero}</div>
+          <div style={{color:C.muted,fontSize:10,marginTop:1,fontWeight:600}}>{table.zone.toUpperCase()}</div>
+        </div>
+        <div style={{width:10,height:10,borderRadius:"50%",background:cfg.border,marginTop:4,
+          animation:statut!=="libre"?"pulse 1.6s infinite":"none"}}/>
+      </div>
+      <div style={{marginTop:8,color:C.muted,fontSize:12}}>👥 {table.capacite} pers. max</div>
+      {reservation && (
+        <div style={{marginTop:6,borderTop:`1px solid ${C.border}`,paddingTop:6}}>
+          <div style={{color:C.gold,fontSize:11,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{reservation.client}</div>
+          <div style={{color:C.muted,fontSize:10}}>{fmt(reservation.dateHeure)} → {fmt(reservation.dateHeureFin)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// APPLICATION PRINCIPALE
+// ═══════════════════════════════════════════════════════════
+function App() {
+  const [ct, setCt]               = useState(new Date());
+  const [reservations, setResas]  = useState([]);
+  const [apiKeys, setApiKeys]     = useState([]);
+  const [logs, setLogs]           = useState([]);
+  const [loaded, setLoaded]       = useState(false);
+  const [vue, setVue]             = useState("carte");
+  const [modal, setModal]         = useState(null);
+  const [notif, setNotif]         = useState(null);
+  const [newKeyName, setNewKeyName] = useState("");
+  const [resaFiltre, setResaFiltre] = useState("toutes");
+  const [formErr, setFormErr]     = useState({});
+  const [apiCon, setApiCon]       = useState({endpoint:"GET /tables",key:"",result:null,loading:false});
+  const [form, setForm]           = useState({client:"",telephone:"",personnes:2,tableId:"",dateHeure:"",duree:90,notes:""});
+
+  // ── Bootstrap ─────────────────────────────────────────────
+  useEffect(() => {
+    let r = LS.get("resa_v2") || [];
+    let k = LS.get("keys_v2") || [];
+    let l = LS.get("logs_v2") || [];
+
+    if (r.length === 0) {
+      r = [
+        { id:"DEMO1", tableId:7,  client:"Kouassi Aya",   telephone:"07 01 02 03 04", personnes:4, statut:"confirmee",
+          dateHeure:new Date(Date.now()-20*60000).toISOString(), dateHeureFin:new Date(Date.now()+70*60000).toISOString(),
+          createdAt:new Date().toISOString(), source:"dashboard" },
+        { id:"DEMO2", tableId:14, client:"Bamba Sékou",   telephone:"05 55 66 77 88", personnes:6, statut:"confirmee",
+          dateHeure:new Date(Date.now()+22*60000).toISOString(), dateHeureFin:new Date(Date.now()+112*60000).toISOString(),
+          createdAt:new Date().toISOString(), source:"api" },
+        { id:"DEMO3", tableId:3,  client:"Diallo Fatou",  telephone:"01 23 45 67 89", personnes:3, statut:"terminee",
+          dateHeure:new Date(Date.now()-180*60000).toISOString(), dateHeureFin:new Date(Date.now()-90*60000).toISOString(),
+          createdAt:new Date().toISOString(), source:"dashboard" },
+      ];
+      LS.set("resa_v2", r);
+    }
+    if (k.length === 0) {
+      k = [{ id:genId(), name:"Agent vocal principal", key:genKey(), active:true, createdAt:new Date().toISOString() }];
+      LS.set("keys_v2", k);
+    }
+
+    setResas(r); setApiKeys(k); setLogs(l); setLoaded(true);
+  }, []);
+
+  // ── Horloge + auto-expiration ─────────────────────────────
+  useEffect(() => {
+    const t = setInterval(() => {
+      const now = new Date();
+      setCt(now);
+      setResas(prev => {
+        const upd = prev.map(r =>
+          r.statut !== "terminee" && new Date(r.dateHeureFin) < now
+            ? {...r, statut:"terminee"}
+            : r
+        );
+        if (upd.some((r,i) => r.statut !== prev[i].statut)) LS.set("resa_v2", upd);
+        return upd;
+      });
+    }, SYNC_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  const toast = (msg, type="ok") => {
+    setNotif({msg, type});
+    setTimeout(() => setNotif(null), 4000);
+  };
+
+  const addLog = (log) => {
+    setLogs(prev => {
+      const upd = [log, ...prev].slice(0, 150);
+      LS.set("logs_v2", upd);
+      return upd;
+    });
+  };
+
+  // ── Données calculées ─────────────────────────────────────
+  const statuts  = TABLES_DEF.map(t => ({...t, ...getTableStatut(t.id, reservations, ct)}));
+  const nbLibres = statuts.filter(t => t.statut === "libre").length;
+  const nbOcc    = statuts.filter(t => t.statut === "occupee").length;
+  const nbBientot= statuts.filter(t => t.statut === "bientot").length;
+  const resAuj   = reservations.filter(r => new Date(r.dateHeure).toDateString() === ct.toDateString());
+  const ca       = resAuj.reduce((s,r) => s + r.personnes * PRIX, 0);
+  const caTotal  = reservations.reduce((s,r) => s + r.personnes * PRIX, 0);
+  const zones    = [...new Set(TABLES_DEF.map(t => t.zone))];
+
+  // ── Créer réservation (dashboard) ─────────────────────────
+  const creerResa = () => {
+    const errs = {};
+    if (!form.client.trim())    errs.client    = "Nom obligatoire";
+    if (!form.telephone.trim()) errs.telephone = "Téléphone obligatoire";
+    if (!form.dateHeure)        errs.dateHeure = "Date et heure obligatoires";
+    if (!form.tableId)          errs.tableId   = "Choisissez une table";
+
+    if (Object.keys(errs).length) { setFormErr(errs); return; }
+    setFormErr({});
+
+    const tid = parseInt(form.tableId);
+
+    // ── DOUBLE VÉRIFICATION STRICTE ────────────────────────
+    const { statut: statutNow } = getTableStatut(tid, reservations, ct);
+    if (statutNow !== "libre") {
+      toast(`🚫 Table ${form.tableId} est ${statutNow === "occupee" ? "occupée" : "réservée"} — impossible de la réserver.`, "err");
+      return;
+    }
+    const { disponible, conflit } = verifierDisponibilite(tid, form.dateHeure, form.duree, reservations);
+    if (!disponible) {
+      toast(`🚫 Conflit : Table ${form.tableId} déjà réservée sur ce créneau par ${conflit.client}.`, "err");
+      return;
+    }
+
+    const debut = new Date(form.dateHeure);
+    const fin   = new Date(debut.getTime() + form.duree * 60000);
+    const newR  = {
+      id: genId("R"), tableId: tid, client: form.client.trim(),
+      telephone: form.telephone.trim(), personnes: parseInt(form.personnes),
+      statut: "confirmee", dateHeure: debut.toISOString(), dateHeureFin: fin.toISOString(),
+      notes: form.notes, createdAt: new Date().toISOString(), source: "dashboard",
+    };
+    const upd = [...reservations, newR];
+    LS.set("resa_v2", upd); setResas(upd);
+    setModal(null);
+    setForm({client:"",telephone:"",personnes:2,tableId:"",dateHeure:"",duree:90,notes:""});
+    toast(`✓ Table ${form.tableId} réservée pour ${form.client}`);
+  };
+
+  const libererTable = (id) => {
+    const upd = reservations.map(r => r.id === id ? {...r, statut:"terminee"} : r);
+    LS.set("resa_v2", upd); setResas(upd);
+    toast("✓ Table libérée avec succès.");
+    if (modal?.type === "table") setModal(null);
+  };
+
+  // ── Clés API ──────────────────────────────────────────────
+  const creerKey = () => {
+    if (!newKeyName.trim()) { toast("Donnez un nom à la clé.", "err"); return; }
+    const k = { id:genId(), name:newKeyName.trim(), key:genKey(), active:true, createdAt:new Date().toISOString() };
+    const upd = [...apiKeys, k]; LS.set("keys_v2", upd); setApiKeys(upd);
+    setNewKeyName("");
+    toast(`✓ Clé créée : ${k.name}`);
+  };
+  const toggleKey = (id) => { const upd = apiKeys.map(k => k.id===id?{...k,active:!k.active}:k); LS.set("keys_v2",upd); setApiKeys(upd); };
+  const deleteKey = (id) => { if(!confirm("Supprimer définitivement cette clé ?")) return; const upd=apiKeys.filter(k=>k.id!==id); LS.set("keys_v2",upd); setApiKeys(upd); toast("Clé supprimée."); };
+
+  // ── Console API ───────────────────────────────────────────
+  const runApi = () => {
+    setApiCon(a => ({...a, loading:true, result:null}));
+    const [method, ...rest] = apiCon.endpoint.split(" ");
+    let path = rest.join(" ");
+    const body = { _apiKey: apiCon.key };
+
+    if (method === "POST") {
+      const libreTable = statuts.find(t => t.statut === "libre");
+      body.client = "Client Test"; body.telephone = "07 00 00 00 00";
+      body.personnes = 2;
+      body.tableId = libreTable?.id || 1;
+      body.dateHeure = new Date(Date.now() + 3600000).toISOString();
+      body.dureeMinutes = 90;
+    }
+    if (method === "PUT") {
+      const ar = reservations.find(r => r.statut === "confirmee");
+      path = ar ? `/reservations/${ar.id}/terminer` : "/reservations/XXXXX/terminer";
+    }
+
+    const res = processApiCall(method, path, body, apiKeys, reservations, ct);
+    const log = {
+      id: genId(), ts: new Date().toISOString(), method, path,
+      status: res.status,
+      key: res._key || (apiCon.key ? "Clé invalide" : "Aucune clé"),
+    };
+    addLog(log);
+
+    if (res.data._newResa) {
+      const upd = [...reservations, res.data._newResa]; LS.set("resa_v2",upd); setResas(upd);
+    }
+    if (res.data._terminerId) libererTable(res.data._terminerId);
+
+    const clean = {...res.data};
+    delete clean._newResa; delete clean._terminerId;
+    setTimeout(() => setApiCon(a => ({...a, loading:false, result:{status:res.status, data:clean}})), 350);
+  };
+
+  const resFiltrees = reservations
+    .filter(r => resaFiltre==="toutes" ? true : resaFiltre==="actives" ? r.statut==="confirmee" : r.statut==="terminee")
+    .sort((a,b) => new Date(b.dateHeure) - new Date(a.dateHeure));
+
+  if (!loaded) return (
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:52,marginBottom:16}}>🍽️</div>
+        <div style={{color:C.gold,fontWeight:700,fontSize:16}}>Chargement du système…</div>
+      </div>
+    </div>
+  );
+
+  // ═══════════════════════════════════════════════════════════
+  return (
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text}}>
+
+      {/* TOAST */}
+      {notif && (
+        <div style={{position:"fixed",top:20,right:20,zIndex:9999,
+          background:notif.type==="err"?"#450a0a":"#052e16",
+          border:`1px solid ${notif.type==="err"?C.occupee:C.libre}`,
+          color:C.text,borderRadius:12,padding:"13px 20px",fontSize:14,fontWeight:600,
+          animation:"slideIn .3s ease",boxShadow:"0 12px 40px rgba(0,0,0,.6)",maxWidth:400,
+          lineHeight:1.5}}>
+          {notif.msg}
+        </div>
+      )}
+
+      {/* HEADER */}
+      <header style={{borderBottom:`1px solid ${C.border}`,background:C.surface,position:"sticky",top:0,zIndex:200}}>
+        <div style={{maxWidth:1300,margin:"0 auto",padding:"0 20px",
+          display:"flex",alignItems:"center",justifyContent:"space-between",height:62,flexWrap:"wrap",gap:8}}>
+
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{width:36,height:36,borderRadius:10,
+              background:`linear-gradient(135deg,${C.goldDim},${C.gold})`,
+              display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>🍽️</div>
+            <div>
+              <div style={{fontWeight:900,fontSize:16,color:C.gold,letterSpacing:-.3}}>{RESTAURANT_NAME}</div>
+              <div style={{color:C.muted,fontSize:10,letterSpacing:.5}}>SYSTÈME DE RÉSERVATION — CÔTE D'IVOIRE</div>
+            </div>
+          </div>
+
+          <nav style={{display:"flex",gap:2,flexWrap:"wrap"}}>
+            {[["carte","🗺️ Carte"],["dashboard","📊 Patron"],["reservations","📋 Réservations"],["api","🔑 API & Clés"],["logs","📡 Logs"]].map(([k,l])=>(
+              <button key={k} onClick={()=>setVue(k)} style={{
+                background:vue===k?`${C.gold}18`:"transparent",
+                color:vue===k?C.gold:C.muted,
+                border:vue===k?`1px solid ${C.goldDim}`:"1px solid transparent",
+                borderRadius:8,padding:"6px 13px",fontSize:12,fontWeight:vue===k?800:600,cursor:"pointer",transition:"all .15s"}}>
+                {l}
+              </button>
+            ))}
+          </nav>
+
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,background:C.card,
+              border:`1px solid ${C.border}`,borderRadius:8,padding:"5px 12px"}}>
+              <span style={{width:7,height:7,borderRadius:"50%",background:C.libre,animation:"pulse 2s infinite"}}/>
+              <span style={{color:C.muted,fontSize:11,fontWeight:600}}>EN DIRECT</span>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{color:C.text,fontSize:13,fontWeight:800,fontFamily:"'JetBrains Mono'"}}>{ct.toLocaleTimeString("fr-FR")}</div>
+              <div style={{color:C.muted,fontSize:10}}>{ct.toLocaleDateString("fr-FR",{weekday:"short",day:"numeric",month:"short"})}</div>
+            </div>
+            <Btn onClick={()=>setModal({type:"nouvelle"})} style={{padding:"8px 16px",fontSize:13}}>+ Réservation</Btn>
+          </div>
+        </div>
+      </header>
+
+      <main style={{maxWidth:1300,margin:"0 auto",padding:"26px 20px"}}>
+
+        {/* ══════════════════════ CARTE ══════════════════════ */}
+        {vue==="carte" && (
+          <div style={{animation:"fadeIn .3s ease"}}>
+            {/* Compteurs */}
+            <div style={{display:"flex",gap:10,marginBottom:24,flexWrap:"wrap"}}>
+              {[[nbLibres,C.libre,"LIBRES","Cliquez pour réserver"],[nbOcc,C.occupee,"OCCUPÉES","Tables bloquées"],[nbBientot,C.bientot,"BIENTÔT","Réservation imminente"]].map(([n,c,l,s])=>(
+                <div key={l} style={{flex:1,minWidth:90,background:C.card,border:`2px solid ${c}`,borderRadius:12,padding:"13px 16px",textAlign:"center"}}>
+                  <div style={{color:c,fontSize:32,fontWeight:900}}>{n}</div>
+                  <div style={{color:c,fontSize:10,fontWeight:800,opacity:.9}}>{l}</div>
+                  <div style={{color:C.muted,fontSize:10,marginTop:3}}>{s}</div>
+                </div>
+              ))}
+              <div style={{flex:3,minWidth:220,background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"13px 20px"}}>
+                <div style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:1,marginBottom:10}}>LÉGENDE</div>
+                <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                  {[[C.libre,"🟢 Libre — Cliquez pour réserver"],[C.occupee,"🔴 Occupée — 🔒 Bloquée (réservation impossible)"],[C.bientot,"🟠 Réservée ≤30 min — 🔒 Bloquée"]].map(([c,l])=>(
+                    <div key={l} style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{width:10,height:10,borderRadius:2,background:c,display:"inline-block",flexShrink:0}}/>
+                      <span style={{color:C.muted,fontSize:11}}>{l}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Tables par zone */}
+            {zones.map(zone => (
+              <div key={zone} style={{marginBottom:26}}>
+                <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+                  <span style={{color:C.muted,fontSize:11,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase"}}>{zone}</span>
+                  <div style={{flex:1,height:1,background:C.border}}/>
+                  <span style={{color:C.muted,fontSize:11}}>
+                    {TABLES_DEF.filter(t=>t.zone===zone&&getTableStatut(t.id,reservations,ct).statut==="libre").length} libre(s)
+                  </span>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(148px,1fr))",gap:12}}>
+                  {TABLES_DEF.filter(t=>t.zone===zone).map(table => {
+                    const s = statuts.find(x => x.id === table.id);
+                    return (
+                      <TableCard key={table.id} table={table} statut={s.statut} reservation={s.reservation}
+                        onClick={() => setModal({type:"table", tableId:table.id})}/>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ════════════════ TABLEAU DE BORD PATRON ═══════════ */}
+        {vue==="dashboard" && (
+          <div style={{animation:"fadeIn .3s ease"}}>
+            <SecTitle>📊 Tableau de bord — Vue patron</SecTitle>
+
+            {/* KPIs */}
+            <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:24}}>
+              <KPI label="Réservations aujourd'hui" value={resAuj.length} color={C.gold}/>
+              <KPI label="Tables occupées" value={nbOcc} color={C.occupee}/>
+              <KPI label="Tables libres" value={nbLibres} color={C.libre}/>
+              <KPI label="Taux d'occupation" value={Math.round((nbOcc/TABLES_DEF.length)*100)+"%"} color={C.purple}/>
+              <KPI label="CA estimé aujourd'hui" value={fcfa(ca)} color={C.gold} sub="FCFA"/>
+              <KPI label="CA total cumulé" value={fcfa(caTotal)} color={C.goldLight}/>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 370px",gap:20,marginBottom:24}}>
+              {/* Liste du jour */}
+              <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,overflow:"hidden"}}>
+                <div style={{padding:"14px 20px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontWeight:800,fontSize:15}}>Réservations du jour</span>
+                  <span style={{color:C.muted,fontSize:12}}>{ct.toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})}</span>
+                </div>
+                {resAuj.length === 0
+                  ? <div style={{padding:48,textAlign:"center",color:C.muted}}>Aucune réservation aujourd'hui</div>
+                  : resAuj.sort((a,b)=>new Date(a.dateHeure)-new Date(b.dateHeure)).map(r => {
+                    const isA = r.statut!=="terminee" && new Date(r.dateHeure)<=ct && new Date(r.dateHeureFin)>ct;
+                    const isB = r.statut!=="terminee" && !isA && (new Date(r.dateHeure)-ct)/60000<=30;
+                    const sc  = r.statut==="terminee"?C.muted:isA?C.occupee:isB?C.bientot:C.blue;
+                    return (
+                      <div key={r.id} style={{display:"flex",alignItems:"center",gap:12,
+                        padding:"12px 20px",borderBottom:`1px solid ${C.bg}`,
+                        opacity:r.statut==="terminee"?.5:1,flexWrap:"wrap"}}>
+                        <div style={{width:8,height:8,borderRadius:"50%",background:sc,flexShrink:0,
+                          animation:isA?"pulse 1.5s infinite":"none"}}/>
+                        <div style={{flex:1,minWidth:130}}>
+                          <div style={{fontWeight:700,fontSize:13}}>{r.client}</div>
+                          <div style={{color:C.muted,fontSize:11}}>{r.telephone}</div>
+                        </div>
+                        <div style={{color:C.gold,fontWeight:700,fontSize:13}}>T{r.tableId}</div>
+                        <div style={{color:C.muted,fontSize:12}}>👥 {r.personnes}</div>
+                        <div style={{color:C.muted,fontSize:11,fontFamily:"'JetBrains Mono'"}}>
+                          {fmt(r.dateHeure)} → {fmt(r.dateHeureFin)}
+                        </div>
+                        <div style={{color:C.gold,fontSize:12,fontWeight:700}}>{fcfa(r.personnes*PRIX)}</div>
+                        {r.source==="api" && (
+                          <span style={{background:`${C.blue}22`,color:C.blue,
+                            border:`1px solid ${C.blue}44`,borderRadius:5,
+                            padding:"2px 7px",fontSize:10,fontWeight:700}}>API</span>
+                        )}
+                        {r.statut!=="terminee"
+                          ? <button onClick={()=>libererTable(r.id)} style={{background:"#450a0a",color:"#f87171",
+                              border:"1px solid #ef444455",borderRadius:7,padding:"4px 10px",
+                              fontSize:11,fontWeight:700,cursor:"pointer"}}>Libérer</button>
+                          : <span style={{color:C.muted,fontSize:11}}>Terminée</span>}
+                      </div>
+                    );
+                  })
+                }
+              </div>
+
+              {/* Stat zones + API */}
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:20,flex:1}}>
+                  <div style={{fontWeight:800,marginBottom:16}}>Occupation par zone</div>
+                  {zones.map(zone => {
+                    const tz  = statuts.filter(t => t.zone === zone);
+                    const occ = tz.filter(t => t.statut === "occupee").length;
+                    const pct = Math.round((occ/tz.length)*100);
+                    const col = pct>75?C.occupee:pct>40?C.bientot:C.libre;
+                    return (
+                      <div key={zone} style={{marginBottom:14}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                          <span style={{color:C.muted,fontSize:12,fontWeight:600}}>{zone}</span>
+                          <span style={{fontSize:12,fontWeight:700,color:col}}>{occ}/{tz.length}</span>
+                        </div>
+                        <div style={{background:C.bg,borderRadius:4,height:7}}>
+                          <div style={{width:`${pct}%`,height:"100%",background:col,borderRadius:4,transition:"width .6s"}}/>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:20}}>
+                  <div style={{fontWeight:800,marginBottom:14}}>Activité API</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                    {[
+                      [logs.length,C.blue,"Appels total"],
+                      [logs.filter(l=>l.status<300).length,C.libre,"Succès"],
+                      [logs.filter(l=>l.status>=400).length,C.occupee,"Erreurs / Refus"],
+                      [apiKeys.filter(k=>k.active).length,C.gold,"Clés actives"],
+                    ].map(([v,c,l])=>(
+                      <div key={l} style={{textAlign:"center"}}>
+                        <div style={{color:c,fontSize:26,fontWeight:900}}>{v}</div>
+                        <div style={{color:C.muted,fontSize:11}}>{l}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════════════════ RÉSERVATIONS ══════════════════════ */}
+        {vue==="reservations" && (
+          <div style={{animation:"fadeIn .3s ease"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
+              <SecTitle>📋 Toutes les réservations</SecTitle>
+              <div style={{display:"flex",gap:6}}>
+                {[["toutes","Toutes"],["actives","Actives"],["terminees","Terminées"]].map(([k,l])=>(
+                  <button key={k} onClick={()=>setResaFiltre(k)} style={{
+                    background:resaFiltre===k?`${C.gold}20`:C.card,
+                    color:resaFiltre===k?C.gold:C.muted,
+                    border:`1px solid ${resaFiltre===k?C.goldDim:C.border}`,
+                    borderRadius:8,padding:"6px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,overflow:"hidden"}}>
+              {resFiltrees.length===0
+                ? <div style={{padding:60,textAlign:"center",color:C.muted}}>Aucune réservation</div>
+                : resFiltrees.map(r => (
+                  <div key={r.id} style={{display:"flex",alignItems:"center",gap:14,padding:"13px 20px",
+                    borderBottom:`1px solid ${C.bg}`,opacity:r.statut==="terminee"?.5:1,flexWrap:"wrap"}}>
+                    <div style={{flex:1,minWidth:140}}>
+                      <div style={{fontWeight:700,fontSize:13}}>{r.client}</div>
+                      <div style={{color:C.muted,fontSize:11}}>{r.telephone}</div>
+                    </div>
+                    <div style={{color:C.gold,fontWeight:700}}>T{r.tableId}</div>
+                    <div style={{color:C.muted,fontSize:12}}>👥 {r.personnes}</div>
+                    {r.source==="api" && (
+                      <span style={{background:`${C.blue}22`,color:C.blue,border:`1px solid ${C.blue}44`,
+                        borderRadius:5,padding:"2px 7px",fontSize:10,fontWeight:700}}>API</span>
+                    )}
+                    <div style={{color:C.muted,fontSize:11,fontFamily:"'JetBrains Mono'"}}>{fmt(r.dateHeure,"full")} → {fmt(r.dateHeureFin,"time")}</div>
+                    <div style={{color:C.gold,fontSize:12,fontWeight:700}}>{fcfa(r.personnes*PRIX)}</div>
+                    <Badge s={r.statut==="terminee"?"terminee":"occupee"}/>
+                    {r.statut!=="terminee" && (
+                      <button onClick={()=>libererTable(r.id)} style={{background:"#450a0a",color:"#f87171",
+                        border:"1px solid #ef444455",borderRadius:7,padding:"5px 10px",
+                        fontSize:11,fontWeight:700,cursor:"pointer"}}>Libérer</button>
+                    )}
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        )}
+
+        {/* ════════════════ API & CLÉS ════════════════════════ */}
+        {vue==="api" && (
+          <div style={{animation:"fadeIn .3s ease"}}>
+            <SecTitle>🔑 Gestion des clés API</SecTitle>
+
+            {/* Créer clé */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:22,marginBottom:20}}>
+              <div style={{fontWeight:800,marginBottom:6}}>Créer une nouvelle clé API</div>
+              <div style={{color:C.muted,fontSize:12,marginBottom:14}}>
+                Chaque clé donne accès complet à l'API. Sans clé valide → accès refusé (401).
+              </div>
+              <div style={{display:"flex",gap:10}}>
+                <input value={newKeyName} onChange={e=>setNewKeyName(e.target.value)}
+                  placeholder="Nom : Agent Vapi, Chatbot WhatsApp, Intégration POS…"
+                  style={{...iBase,flex:1}}
+                  onFocus={e=>e.target.style.borderColor=C.gold}
+                  onBlur={e=>e.target.style.borderColor="#1c2b3f"}
+                  onKeyDown={e=>e.key==="Enter"&&creerKey()}/>
+                <Btn onClick={creerKey} style={{whiteSpace:"nowrap"}}>Générer la clé</Btn>
+              </div>
+            </div>
+
+            {/* Liste clés */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,overflow:"hidden",marginBottom:28}}>
+              <div style={{padding:"14px 20px",borderBottom:`1px solid ${C.border}`,fontWeight:800}}>
+                Clés API actives ({apiKeys.filter(k=>k.active).length}/{apiKeys.length})
+              </div>
+              {apiKeys.length===0
+                ? <div style={{padding:40,textAlign:"center",color:C.muted}}>Aucune clé créée</div>
+                : apiKeys.map(k => (
+                  <div key={k.id} style={{padding:"16px 20px",borderBottom:`1px solid ${C.bg}`,
+                    display:"flex",alignItems:"center",gap:14,flexWrap:"wrap",
+                    opacity:k.active?1:.6}}>
+                    <div style={{flex:1,minWidth:120}}>
+                      <div style={{fontWeight:700}}>{k.name}</div>
+                      <div style={{color:C.muted,fontSize:11}}>Créée le {fmt(k.createdAt,"date")}</div>
+                    </div>
+                    <code style={{fontFamily:"'JetBrains Mono'",fontSize:12,
+                      color:k.active?C.gold:C.muted,background:C.bg,
+                      border:`1px solid ${C.border}`,borderRadius:8,
+                      padding:"7px 14px",userSelect:"all",cursor:"text",
+                      letterSpacing:.3}}>{k.key}</code>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{width:8,height:8,borderRadius:"50%",background:k.active?C.libre:C.muted}}/>
+                      <span style={{color:k.active?C.libre:C.muted,fontSize:12,fontWeight:700}}>
+                        {k.active?"Active":"Inactive"}
+                      </span>
+                    </div>
+                    <button onClick={()=>toggleKey(k.id)} style={{background:C.surface,color:C.muted,
+                      border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 12px",
+                      fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                      {k.active?"Désactiver":"Activer"}
+                    </button>
+                    <button onClick={()=>deleteKey(k.id)} style={{background:"#450a0a",color:"#f87171",
+                      border:"1px solid #ef444444",borderRadius:7,padding:"5px 12px",
+                      fontSize:11,fontWeight:700,cursor:"pointer"}}>Supprimer</button>
+                  </div>
+                ))
+              }
+            </div>
+
+            {/* Endpoints */}
+            <SecTitle>⚙️ Endpoints REST — Documentation</SecTitle>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:14,marginBottom:28}}>
+              {[
+                ["GET","/tables",C.libre,"Toutes les tables + statut temps réel + résumé (libres/occupées/bientôt)"],
+                ["GET","/tables/disponibles",C.libre,"Tables libres uniquement — pour que l'agent vocal propose uniquement les tables disponibles"],
+                ["POST","/reservations",C.bientot,"Crée une réservation. 🚫 Retourne 409 si la table est déjà prise ou occupée — blocage strict."],
+                ["PUT","/reservations/{id}/terminer",C.purple,"Libère la table à la fin du repas. Statut mis à 'terminee'."],
+              ].map(([m,p,c,d])=>(
+                <div key={p} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,overflow:"hidden"}}>
+                  <div style={{padding:"11px 16px",borderBottom:`1px solid ${C.bg}`,display:"flex",alignItems:"center",gap:10}}>
+                    <span style={{background:`${c}22`,color:c,border:`1px solid ${c}55`,
+                      borderRadius:6,padding:"3px 9px",fontSize:11,fontWeight:800}}>{m}</span>
+                    <code style={{color:C.text,fontSize:12,fontFamily:"'JetBrains Mono'",fontWeight:700}}>{p}</code>
+                    <span style={{marginLeft:"auto",background:`${C.gold}18`,color:C.gold,
+                      border:`1px solid ${C.goldDim}`,borderRadius:5,
+                      padding:"2px 7px",fontSize:10,fontWeight:700}}>🔑 AUTH</span>
+                  </div>
+                  <div style={{padding:"10px 16px",color:C.muted,fontSize:12,lineHeight:1.6}}>{d}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Console API */}
+            <SecTitle>🧪 Console API — Test en direct</SecTitle>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:22}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+                <Sel label="Endpoint à tester" value={apiCon.endpoint} onChange={e=>setApiCon(a=>({...a,endpoint:e.target.value}))}>
+                  <option>GET /tables</option>
+                  <option>GET /tables/disponibles</option>
+                  <option>POST /reservations</option>
+                  <option>PUT /reservations/{"{id}"}/terminer</option>
+                </Sel>
+                <Sel label="Clé API (obligatoire)" value={apiCon.key} onChange={e=>setApiCon(a=>({...a,key:e.target.value}))}>
+                  <option value="">— Sans clé (→ 401 Accès refusé) —</option>
+                  {apiKeys.map(k=>(
+                    <option key={k.id} value={k.key}>{k.name} {k.active?"✓":"✗ (inactive)"}</option>
+                  ))}
+                  <option value="rk_fake_test_invalid">❌ Clé invalide (test 401)</option>
+                </Sel>
+              </div>
+              <div style={{display:"flex",gap:10,marginBottom:16}}>
+                <Btn onClick={runApi} style={{opacity:apiCon.loading?.6:1}}>
+                  {apiCon.loading?"Appel en cours…":"▶ Exécuter l'appel API"}
+                </Btn>
+                {apiCon.result && (
+                  <Btn variant="ghost" onClick={()=>setApiCon(a=>({...a,result:null}))}>Effacer</Btn>
+                )}
+              </div>
+              {apiCon.result && (
+                <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
+                  <div style={{padding:"10px 16px",borderBottom:`1px solid ${C.border}`,
+                    display:"flex",alignItems:"center",gap:10}}>
+                    <span style={{color:apiCon.result.status<300?C.libre:apiCon.result.status===401?"#f87171":C.bientot,
+                      fontWeight:800,fontFamily:"'JetBrains Mono'",fontSize:16}}>
+                      HTTP {apiCon.result.status}
+                    </span>
+                    <span style={{color:C.muted,fontSize:12}}>
+                      {apiCon.result.status===201?"✓ Réservation créée":
+                       apiCon.result.status===200?"✓ Succès":
+                       apiCon.result.status===401?"🔒 Accès refusé — Clé invalide":
+                       apiCon.result.status===409?"🚫 Table non disponible":
+                       "✕ Erreur"}
+                    </span>
+                  </div>
+                  <pre style={{padding:16,fontFamily:"'JetBrains Mono'",fontSize:12,
+                    color:apiCon.result.status<300?"#a5d6a7":"#fca5a5",
+                    lineHeight:1.7,overflowX:"auto",maxHeight:320,overflowY:"auto",margin:0}}>
+                    {JSON.stringify(apiCon.result.data,null,2)}
+                  </pre>
+                </div>
+              )}
+
+              {/* Code intégration */}
+              <div style={{background:"#0c1a2e",border:"1px solid #1e3a5f",borderRadius:12,padding:18,marginTop:16}}>
+                <div style={{color:C.blue,fontWeight:800,marginBottom:10}}>🔗 Intégration agent vocal</div>
+                <pre style={{fontFamily:"'JetBrains Mono'",fontSize:11,color:"#93c5fd",lineHeight:1.9,whiteSpace:"pre-wrap",margin:0}}>{`// 1. Vérifier les tables disponibles
+GET /tables/disponibles
+Header: x-api-key: ${apiKeys[0]?.key || "rk_live_xxxx_xxxx"}
+
+// 2. Créer une réservation (table bloquée automatiquement)
+POST /reservations
+Header: x-api-key: ${apiKeys[0]?.key || "rk_live_xxxx_xxxx"}
+Body: {
+  "client": "Nom du client",
+  "telephone": "07 00 00 00 00",
+  "personnes": 2,
+  "tableId": 1,
+  "dateHeure": "2025-01-15T19:30:00Z",
+  "dureeMinutes": 90
+}
+// ⚠ Réponse 409 si table occupée → agent doit proposer une autre table
+
+// 3. Libérer la table en fin de repas
+PUT /reservations/{id}/terminer
+Header: x-api-key: ${apiKeys[0]?.key || "rk_live_xxxx_xxxx"}`}</pre>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════════════════ LOGS TEMPS RÉEL ═══════════════════ */}
+        {vue==="logs" && (
+          <div style={{animation:"fadeIn .3s ease"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+              <SecTitle>📡 Logs API — Temps réel</SecTitle>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{width:8,height:8,borderRadius:"50%",background:C.libre,animation:"pulse 1.5s infinite",display:"inline-block"}}/>
+                  <span style={{color:C.muted,fontSize:12}}>Live · {logs.length} entrées</span>
+                </div>
+                {logs.length>0 && (
+                  <button onClick={()=>{LS.set("logs_v2",[]); setLogs([]);}} style={{background:"#450a0a",color:"#f87171",
+                    border:"1px solid #ef444455",borderRadius:7,padding:"5px 12px",
+                    fontSize:11,fontWeight:700,cursor:"pointer"}}>Vider les logs</button>
+                )}
+              </div>
+            </div>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,overflow:"hidden"}}>
+              <div style={{display:"grid",gridTemplateColumns:"160px 60px 240px 80px 1fr",
+                padding:"10px 20px",borderBottom:`1px solid ${C.border}`,background:C.surface}}>
+                {["Horodatage","Méthode","Endpoint","Statut HTTP","Clé utilisée"].map(h=>(
+                  <div key={h} style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:.8,textTransform:"uppercase"}}>{h}</div>
+                ))}
+              </div>
+              {logs.length===0
+                ? <div style={{padding:60,textAlign:"center",color:C.muted}}>
+                    Aucun appel enregistré.<br/>
+                    <span style={{fontSize:12}}>Utilisez la console API pour tester vos endpoints.</span>
+                  </div>
+                : logs.slice(0,100).map(l => (
+                  <div key={l.id} style={{display:"grid",gridTemplateColumns:"160px 60px 240px 80px 1fr",
+                    padding:"11px 20px",borderBottom:`1px solid ${C.bg}`,alignItems:"center"}}>
+                    <div style={{fontFamily:"'JetBrains Mono'",fontSize:11,color:C.muted}}>{fmt(l.ts,"full")}</div>
+                    <div>
+                      <span style={{
+                        background:l.method==="GET"?`${C.libre}22`:l.method==="POST"?`${C.bientot}22`:`${C.purple}22`,
+                        color:l.method==="GET"?C.libre:l.method==="POST"?C.bientot:C.purple,
+                        border:`1px solid ${l.method==="GET"?C.libre:l.method==="POST"?C.bientot:C.purple}44`,
+                        borderRadius:5,padding:"2px 7px",fontSize:10,fontWeight:800}}>
+                        {l.method}
+                      </span>
+                    </div>
+                    <div style={{fontFamily:"'JetBrains Mono'",fontSize:11,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.path}</div>
+                    <div style={{
+                      color:l.status<300?C.libre:l.status===401?"#f87171":l.status===409?C.bientot:C.occupee,
+                      fontWeight:800,fontSize:13,fontFamily:"'JetBrains Mono'"}}>
+                      {l.status}
+                    </div>
+                    <div style={{color:C.muted,fontSize:11}}>{l.key}</div>
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* ════════════ MODAL NOUVELLE RÉSERVATION ════════════ */}
+      {modal?.type==="nouvelle" && (
+        <Modal onClose={()=>{setModal(null);setFormErr({});}}>
+          <div style={{fontWeight:900,fontSize:20,marginBottom:6,color:C.gold}}>➕ Nouvelle réservation</div>
+          <div style={{color:C.muted,fontSize:12,marginBottom:20}}>
+            Seules les tables <span style={{color:C.libre,fontWeight:700}}>libres</span> peuvent être réservées. Les tables occupées sont bloquées.
+          </div>
+          <Inp label="Nom complet du client *" value={form.client}
+            onChange={e=>setForm(f=>({...f,client:e.target.value}))}
+            placeholder="Ex : Kouamé Adjoua" error={formErr.client}/>
+          <Inp label="Téléphone *" value={form.telephone}
+            onChange={e=>setForm(f=>({...f,telephone:e.target.value}))}
+            placeholder="07 00 00 00 00" type="tel" error={formErr.telephone}/>
+          <Inp label="Date et heure d'arrivée *" value={form.dateHeure}
+            onChange={e=>setForm(f=>({...f,dateHeure:e.target.value}))}
+            type="datetime-local" error={formErr.dateHeure}/>
+          <Sel label="Table (libres uniquement) *" value={form.tableId}
+            onChange={e=>setForm(f=>({...f,tableId:e.target.value}))}
+            error={formErr.tableId}>
+            <option value="">— Choisir une table disponible —</option>
+            {statuts.filter(t=>t.statut==="libre").map(t=>(
+              <option key={t.id} value={t.id}>
+                ✅ Table {t.numero} — {t.zone} ({t.capacite} pers. max)
+              </option>
+            ))}
+            {statuts.filter(t=>t.statut!=="libre").map(t=>(
+              <option key={t.id} value={t.id} disabled style={{color:"#64748b"}}>
+                🔒 Table {t.numero} — {t.zone} ({t.statut==="occupee"?"OCCUPÉE":"RÉSERVÉE BIENTÔT"})
+              </option>
+            ))}
+          </Sel>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Inp label="Nombre de personnes" value={form.personnes}
+              onChange={e=>setForm(f=>({...f,personnes:e.target.value}))}
+              type="number" min={1} max={20}/>
+            <Inp label="Durée (minutes)" value={form.duree}
+              onChange={e=>setForm(f=>({...f,duree:e.target.value}))}
+              type="number" min={30} step={30}/>
+          </div>
+          <Inp label="Notes (optionnel)" value={form.notes}
+            onChange={e=>setForm(f=>({...f,notes:e.target.value}))}
+            placeholder="Allergie, anniversaire, demande spéciale…"/>
+          {form.personnes>0 && (
+            <div style={{background:C.bg,border:`1px solid ${C.border}`,
+              borderRadius:10,padding:"12px 16px",marginBottom:16,
+              display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:C.muted,fontSize:13}}>CA estimé</span>
+              <span style={{color:C.gold,fontWeight:800,fontSize:17}}>{fcfa(parseInt(form.personnes||0)*PRIX)}</span>
+            </div>
+          )}
+          <div style={{display:"flex",gap:10}}>
+            <Btn variant="ghost" onClick={()=>{setModal(null);setFormErr({});}} style={{flex:1}}>Annuler</Btn>
+            <Btn onClick={creerResa} style={{flex:2,fontSize:15}}>Confirmer la réservation</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {/* ════════════ MODAL DÉTAIL TABLE ════════════════════ */}
+      {modal?.type==="table" && (() => {
+        const table = TABLES_DEF.find(t=>t.id===modal.tableId);
+        const s     = statuts.find(t=>t.id===modal.tableId);
+        if (!table||!s) return null;
+        const isBlocked = s.statut !== "libre";
+        return (
+          <Modal onClose={()=>setModal(null)}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
+              <div>
+                <div style={{fontWeight:900,fontSize:24}}>Table {table.numero}</div>
+                <div style={{color:C.muted,fontSize:13,marginTop:2}}>{table.zone} · Capacité {table.capacite} personnes</div>
+              </div>
+              <Badge s={s.statut}/>
+            </div>
+
+            {/* Alerte blocage */}
+            {isBlocked && (
+              <div style={{background:"#450a0a",border:"1px solid #ef444466",borderRadius:12,
+                padding:"12px 16px",marginBottom:16,display:"flex",gap:10,alignItems:"flex-start"}}>
+                <span style={{fontSize:20}}>🔒</span>
+                <div>
+                  <div style={{color:"#f87171",fontWeight:800,marginBottom:4}}>
+                    Table bloquée — Réservation impossible
+                  </div>
+                  <div style={{color:"#fca5a5",fontSize:12}}>
+                    {s.statut==="occupee"
+                      ? "Cette table est actuellement occupée. Elle sera disponible à la fin de la réservation en cours."
+                      : "Une réservation démarre dans moins de 30 minutes sur cette table."}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {s.reservation && (
+              <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:14,padding:18,marginBottom:16}}>
+                <div style={{color:C.gold,fontWeight:800,marginBottom:14}}>
+                  Réservation {s.statut==="bientot"?"à venir":"en cours"}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                  {[["Client",s.reservation.client],["Téléphone",s.reservation.telephone],
+                    ["Personnes",`${s.reservation.personnes} pers.`],["Arrivée",fmt(s.reservation.dateHeure)],
+                    ["Départ prévu",fmt(s.reservation.dateHeureFin)],["Réf.",s.reservation.id]
+                  ].map(([k,v])=>(
+                    <div key={k}>
+                      <div style={{color:C.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",marginBottom:3}}>{k}</div>
+                      <div style={{fontSize:13,fontWeight:600,fontFamily:k==="Réf."?"'JetBrains Mono'":"inherit"}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <Btn variant="danger" onClick={()=>libererTable(s.reservation.id)}
+                  style={{width:"100%",marginTop:16,textAlign:"center"}}>
+                  🔓 Libérer la table maintenant
+                </Btn>
+              </div>
+            )}
+
+            {!s.reservation && (
+              <div style={{background:"#052e16",border:`1px solid ${C.libre}44`,borderRadius:14,
+                padding:20,marginBottom:16,textAlign:"center"}}>
+                <div style={{color:C.libre,fontSize:36}}>✓</div>
+                <div style={{color:C.libre,fontWeight:700,marginTop:6}}>Table disponible</div>
+                <div style={{color:C.muted,fontSize:12,marginTop:4}}>Prête à accueillir des clients</div>
+              </div>
+            )}
+
+            <div style={{display:"flex",gap:10}}>
+              <Btn variant="ghost" onClick={()=>setModal(null)} style={{flex:1}}>Fermer</Btn>
+              {!isBlocked && (
+                <Btn onClick={()=>setModal({type:"nouvelle"})} style={{flex:2}}>
+                  + Réserver la table {table.numero}
+                </Btn>
+              )}
+            </div>
+          </Modal>
+        );
+      })()}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
