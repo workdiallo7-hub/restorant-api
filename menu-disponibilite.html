@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Le Plateau Doré — Gestion Menu du Jour</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#080c14;color:#e2e8f0;font-family:'Inter',system-ui,sans-serif;min-height:100vh}
+    ::-webkit-scrollbar{width:5px;background:#080c14}
+    ::-webkit-scrollbar-thumb{background:#1c2b3f;border-radius:3px}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    @keyframes slideIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    .toggle{position:relative;display:inline-block;width:52px;height:28px;cursor:pointer}
+    .toggle input{opacity:0;width:0;height:0}
+    .slider{position:absolute;inset:0;background:#334155;border-radius:28px;transition:.3s}
+    .slider:before{content:'';position:absolute;height:20px;width:20px;left:4px;bottom:4px;background:white;border-radius:50%;transition:.3s}
+    input:checked+.slider{background:#10b981}
+    input:checked+.slider:before{transform:translateX(24px)}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel">
+const {useState,useEffect,useCallback} = React;
+
+// ─── CONFIG ───────────────────────────────────────
+const C = {
+  bg:"#080c14",surface:"#0e1520",card:"#131d2e",border:"#1c2b3f",
+  gold:"#d4a843",goldLight:"#f0c060",goldDim:"#8a6a20",
+  libre:"#10b981",occupee:"#ef4444",muted:"#64748b",text:"#e2e8f0",
+  blue:"#3b82f6",purple:"#8b5cf6",
+};
+
+const MENU_INIT = [
+  {id:"E1",cat:"Entrées",nom:"Salade Césare Africaine",prix:4500,dispo:true,desc:"Laitue, poulet grillé, parmesan, sauce césar maison"},
+  {id:"E2",cat:"Entrées",nom:"Carpaccio de thiof",prix:5500,dispo:true,desc:"Thiof mariné au citron vert, huile d'olive, herbes fraîches"},
+  {id:"E3",cat:"Entrées",nom:"Crevettes flambées",prix:7500,dispo:true,desc:"Crevettes royales flambées au whisky, beurre ail"},
+  {id:"E4",cat:"Entrées",nom:"Soupe de poisson",prix:3500,dispo:true,desc:"Soupe traditionnelle ivoirienne, légumes du jardin"},
+  {id:"E5",cat:"Entrées",nom:"Accras de crevettes",prix:4000,dispo:true,desc:"Beignets légers de crevettes, sauce pimentée maison"},
+  {id:"E6",cat:"Entrées",nom:"Planche de charcuterie",prix:8500,dispo:false,desc:"Sélection de charcuteries importées, pain grillé"},
+  {id:"P1",cat:"Poissons & Fruits de mer",nom:"Thiof braisé entier",prix:15000,dispo:true,desc:"Thiof entier braisé, sauce tomate aux herbes, attiéké"},
+  {id:"P2",cat:"Poissons & Fruits de mer",nom:"Capitaine grillé",prix:12500,dispo:true,desc:"Filet de capitaine grillé, beurre blanc citron"},
+  {id:"P3",cat:"Poissons & Fruits de mer",nom:"Langouste grillée",prix:28000,dispo:false,desc:"Langouste entière grillée, beurre ail, frites maison"},
+  {id:"P4",cat:"Poissons & Fruits de mer",nom:"Crevettes royales",prix:14000,dispo:true,desc:"Crevettes sautées, sauce curry coco, riz basmati"},
+  {id:"P5",cat:"Poissons & Fruits de mer",nom:"Gambas à la plancha",prix:16500,dispo:true,desc:"Gambas grillées, huile d'olive, ail, piment doux"},
+  {id:"P6",cat:"Poissons & Fruits de mer",nom:"Poisson sauce claire",prix:9500,dispo:true,desc:"Poisson mijoté sauce claire traditionnelle, attiéké"},
+  {id:"P7",cat:"Poissons & Fruits de mer",nom:"Homard thermidor",prix:35000,dispo:false,desc:"Homard, sauce crémée au cognac, gratin de fromage"},
+  {id:"V1",cat:"Viandes & Grillades",nom:"Côte de boeuf (600g)",prix:28000,dispo:true,desc:"Côte de boeuf maturée, sauce au poivre, frites"},
+  {id:"V2",cat:"Viandes & Grillades",nom:"Entrecôte grillée",prix:18500,dispo:true,desc:"Entrecôte 300g, beurre maître d'hôtel, pommes dauphines"},
+  {id:"V3",cat:"Viandes & Grillades",nom:"Poulet braisé",prix:9500,dispo:true,desc:"Poulet braisé entier, sauce pimentée maison, attiéké"},
+  {id:"V4",cat:"Viandes & Grillades",nom:"Magret de canard",prix:16000,dispo:false,desc:"Magret de canard, sauce aux oranges, purée de patate douce"},
+  {id:"V5",cat:"Viandes & Grillades",nom:"Brochettes de boeuf",prix:12000,dispo:true,desc:"Brochettes de filet de boeuf, légumes grillés"},
+  {id:"V6",cat:"Viandes & Grillades",nom:"Mixed grill",prix:19000,dispo:true,desc:"Assortiment grillades : boeuf, poulet, agneau, saucisses"},
+  {id:"V7",cat:"Viandes & Grillades",nom:"Poulet yassa",prix:8500,dispo:true,desc:"Poulet yassa traditionnel, oignons confits, riz"},
+  {id:"I1",cat:"Cuisine Ivoirienne",nom:"Kedjenou de poulet",prix:8000,dispo:true,desc:"Poulet mijoté en cocotte fermée, légumes, épices"},
+  {id:"I2",cat:"Cuisine Ivoirienne",nom:"Sauce graine",prix:7500,dispo:true,desc:"Sauce graine de palme, boeuf ou poulet, riz blanc"},
+  {id:"I3",cat:"Cuisine Ivoirienne",nom:"Foutou banane + sauce",prix:6500,dispo:true,desc:"Foutou banane écrasé, sauce arachide ou égusi"},
+  {id:"I4",cat:"Cuisine Ivoirienne",nom:"Riz gras ivoirien",prix:7000,dispo:true,desc:"Riz gras au poulet, légumes du moment"},
+  {id:"I5",cat:"Cuisine Ivoirienne",nom:"Aloco au poisson",prix:5500,dispo:false,desc:"Bananes plantain frites, poisson fumé, sauce tomate"},
+  {id:"I6",cat:"Cuisine Ivoirienne",nom:"Placali sauce egusi",prix:6000,dispo:true,desc:"Placali traditionnel, sauce egusi aux feuilles de manioc"},
+  {id:"D1",cat:"Desserts",nom:"Fondant chocolat",prix:4500,dispo:true,desc:"Fondant chaud au chocolat noir, glace vanille"},
+  {id:"D2",cat:"Desserts",nom:"Crème brûlée",prix:4000,dispo:true,desc:"Crème brûlée à la vanille de Madagascar"},
+  {id:"D3",cat:"Desserts",nom:"Tiramisu maison",prix:4500,dispo:true,desc:"Tiramisu au café fort, mascarpone"},
+  {id:"D4",cat:"Desserts",nom:"Salade de fruits tropicaux",prix:3500,dispo:true,desc:"Mangue, papaye, ananas, pastèque, menthe"},
+  {id:"D5",cat:"Desserts",nom:"Glaces artisanales",prix:3000,dispo:true,desc:"3 boules au choix : vanille, chocolat, mangue, café"},
+  {id:"B1",cat:"Boissons",nom:"Jus de fruits frais",prix:2500,dispo:true,desc:"Mangue, Ananas, Goyave, Orange — 25cl"},
+  {id:"B2",cat:"Boissons",nom:"Bissap maison",prix:2000,dispo:true,desc:"Jus d'hibiscus frais maison — 25cl"},
+  {id:"B3",cat:"Boissons",nom:"Smoothie tropical",prix:3500,dispo:true,desc:"Mangue-Ananas-Gingembre — 30cl"},
+  {id:"B4",cat:"Boissons",nom:"Plateau Sunset (cocktail)",prix:6500,dispo:true,desc:"Rhum blanc, jus de mangue, grenadine, gingembre"},
+];
+
+function fcfa(n){ return Number(n).toLocaleString("fr-FR")+" F"; }
+
+function LS_get(k){ try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;} }
+function LS_set(k,v){ try{localStorage.setItem(k,JSON.stringify(v));}catch{} }
+
+function App(){
+  const [menu,setMenu]   = useState(()=>LS_get("menu_v1")||MENU_INIT);
+  const [filtre,setFiltre] = useState("toutes");
+  const [recherche,setRecherche] = useState("");
+  const [notif,setNotif] = useState(null);
+  const [now,setNow]     = useState(new Date());
+
+  useEffect(()=>{ const t=setInterval(()=>setNow(new Date()),30000); return()=>clearInterval(t); },[]);
+
+  const toast=(msg,type="ok")=>{ setNotif({msg,type}); setTimeout(()=>setNotif(null),3000); };
+
+  const togglePlat=(id)=>{
+    setMenu(prev=>{
+      const upd=prev.map(p=>p.id===id?{...p,dispo:!p.dispo}:p);
+      LS_set("menu_v1",upd);
+      const plat=upd.find(p=>p.id===id);
+      toast(`${plat.dispo?"✅":"🚫"} "${plat.nom}" — ${plat.dispo?"Disponible":"Indisponible"}`);
+      return upd;
+    });
+  };
+
+  const toutDisponible=()=>{
+    const upd=menu.map(p=>({...p,dispo:true}));
+    setMenu(upd); LS_set("menu_v1",upd);
+    toast("✅ Tous les plats sont disponibles !");
+  };
+
+  const toutIndisponible=()=>{
+    const upd=menu.map(p=>({...p,dispo:false}));
+    setMenu(upd); LS_set("menu_v1",upd);
+    toast("🚫 Tous les plats marqués indisponibles.");
+  };
+
+  const cats = [...new Set(MENU_INIT.map(p=>p.cat))];
+  const nbDispo = menu.filter(p=>p.dispo).length;
+  const nbIndispo = menu.filter(p=>!p.dispo).length;
+
+  const platsFiltres = menu.filter(p=>{
+    const matchCat = filtre==="toutes" || p.cat===filtre;
+    const matchRech = p.nom.toLowerCase().includes(recherche.toLowerCase());
+    return matchCat && matchRech;
+  });
+
+  return (
+    <div style={{minHeight:"100vh",background:C.bg}}>
+      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}`}</style>
+
+      {/* TOAST */}
+      {notif && <div style={{position:"fixed",top:20,right:20,zIndex:9999,background:notif.type==="err"?"#450a0a":"#052e16",border:`1px solid ${notif.type==="err"?"#ef4444":"#10b981"}`,color:"#e2e8f0",borderRadius:12,padding:"12px 20px",fontSize:14,fontWeight:600,animation:"slideIn .3s ease",boxShadow:"0 12px 40px rgba(0,0,0,.5)",maxWidth:380}}>{notif.msg}</div>}
+
+      {/* HEADER */}
+      <header style={{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"0 24px",position:"sticky",top:0,zIndex:100}}>
+        <div style={{maxWidth:1200,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",height:62,gap:16,flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <div style={{width:36,height:36,borderRadius:10,background:`linear-gradient(135deg,${C.goldDim},${C.gold})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>🍽️</div>
+            <div>
+              <div style={{fontWeight:900,fontSize:15,color:C.gold}}>LE PLATEAU DORÉ</div>
+              <div style={{color:C.muted,fontSize:10,letterSpacing:.5}}>GESTION DU MENU DU JOUR</div>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"5px 12px"}}>
+              <span style={{width:7,height:7,borderRadius:"50%",background:C.libre,animation:"pulse 2s infinite"}}/>
+              <span style={{color:C.muted,fontSize:11,fontWeight:600}}>SYNCHRONISÉ</span>
+            </div>
+            <div style={{color:C.muted,fontSize:12,fontFamily:"'JetBrains Mono'"}}>{now.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</div>
+          </div>
+        </div>
+      </header>
+
+      <main style={{maxWidth:1200,margin:"0 auto",padding:"24px 20px"}}>
+
+        {/* KPIs */}
+        <div style={{display:"flex",gap:12,marginBottom:24,flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:120,background:C.card,border:`2px solid ${C.libre}`,borderRadius:14,padding:"16px 20px",textAlign:"center"}}>
+            <div style={{color:C.libre,fontSize:36,fontWeight:900}}>{nbDispo}</div>
+            <div style={{color:C.libre,fontSize:11,fontWeight:700}}>PLATS DISPONIBLES</div>
+            <div style={{color:C.muted,fontSize:10,marginTop:2}}>L'agent peut les proposer</div>
+          </div>
+          <div style={{flex:1,minWidth:120,background:C.card,border:`2px solid #ef4444`,borderRadius:14,padding:"16px 20px",textAlign:"center"}}>
+            <div style={{color:"#ef4444",fontSize:36,fontWeight:900}}>{nbIndispo}</div>
+            <div style={{color:"#ef4444",fontSize:11,fontWeight:700}}>ÉPUISÉS / INDISPO</div>
+            <div style={{color:C.muted,fontSize:10,marginTop:2}}>Bloqués pour l'agent</div>
+          </div>
+          <div style={{flex:2,minWidth:260,background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:"16px 20px",display:"flex",flexDirection:"column",justifyContent:"center",gap:10}}>
+            <div style={{color:C.text,fontSize:13,fontWeight:700,marginBottom:4}}>Actions rapides du patron</div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={toutDisponible} style={{flex:1,background:"#052e16",color:"#4ade80",border:"1px solid #10b98155",borderRadius:10,padding:"10px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                ✅ Tout disponible (début de journée)
+              </button>
+              <button onClick={toutIndisponible} style={{flex:1,background:"#450a0a",color:"#f87171",border:"1px solid #ef444455",borderRadius:10,padding:"10px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                🚫 Tout fermer (fin de service)
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ALERTE API */}
+        <div style={{background:"#0c1a2e",border:"1px solid #1e3a5f",borderRadius:14,padding:"14px 18px",marginBottom:20,display:"flex",alignItems:"center",gap:12}}>
+          <span style={{fontSize:20}}>🤖</span>
+          <div>
+            <div style={{color:C.blue,fontWeight:700,fontSize:13}}>Connexion agent vocal ElevenLabs</div>
+            <div style={{color:"#93c5fd",fontSize:11,marginTop:2}}>
+              L'agent appelle <span style={{fontFamily:"'JetBrains Mono'",background:"#0f172a",padding:"1px 6px",borderRadius:4}}>GET /menu/disponibles</span> pour connaître exactement les plats à proposer aux clients. Les plats marqués 🚫 ne seront JAMAIS proposés.
+            </div>
+          </div>
+        </div>
+
+        {/* FILTRES */}
+        <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap",alignItems:"center"}}>
+          <input value={recherche} onChange={e=>setRecherche(e.target.value)}
+            placeholder="🔍 Rechercher un plat..."
+            style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"8px 14px",color:C.text,fontSize:13,outline:"none",width:220}}
+            onFocus={e=>e.target.style.borderColor=C.gold}
+            onBlur={e=>e.target.style.borderColor=C.border}/>
+          {["toutes",...cats].map(c=>(
+            <button key={c} onClick={()=>setFiltre(c)} style={{
+              background:filtre===c?`${C.gold}20`:C.card,
+              color:filtre===c?C.gold:C.muted,
+              border:`1px solid ${filtre===c?C.goldDim:C.border}`,
+              borderRadius:8,padding:"7px 13px",fontSize:11,fontWeight:700,cursor:"pointer",
+              whiteSpace:"nowrap"
+            }}>{c==="toutes"?"Toutes catégories":c}</button>
+          ))}
+        </div>
+
+        {/* LISTE DES PLATS */}
+        {cats.filter(c=>filtre==="toutes"||filtre===c).map(cat=>{
+          const plats=platsFiltres.filter(p=>p.cat===cat);
+          if(plats.length===0) return null;
+          const nbD=plats.filter(p=>p.dispo).length;
+          return (
+            <div key={cat} style={{marginBottom:24}}>
+              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+                <span style={{color:C.muted,fontSize:11,fontWeight:700,letterSpacing:1.2,textTransform:"uppercase"}}>{cat}</span>
+                <div style={{flex:1,height:1,background:C.border}}/>
+                <span style={{color:nbD===plats.length?C.libre:"#f59e0b",fontSize:11,fontWeight:700}}>
+                  {nbD}/{plats.length} disponibles
+                </span>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:10}}>
+                {plats.map(plat=>(
+                  <div key={plat.id} style={{
+                    background:C.card,
+                    border:`2px solid ${plat.dispo?"#10b98144":"#ef444444"}`,
+                    borderRadius:14,padding:"14px 16px",
+                    display:"flex",alignItems:"center",gap:12,
+                    transition:"all .2s",
+                    opacity:plat.dispo?1:.7,
+                  }}>
+                    {/* Toggle */}
+                    <label className="toggle" style={{flexShrink:0}}>
+                      <input type="checkbox" checked={plat.dispo} onChange={()=>togglePlat(plat.id)}/>
+                      <span className="slider"/>
+                    </label>
+
+                    {/* Infos */}
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                        <div style={{fontWeight:700,fontSize:13,color:plat.dispo?C.text:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{plat.nom}</div>
+                        <div style={{color:C.gold,fontWeight:800,fontSize:12,flexShrink:0,fontFamily:"'JetBrains Mono'"}}>{fcfa(plat.prix)}</div>
+                      </div>
+                      <div style={{color:C.muted,fontSize:11,marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{plat.desc}</div>
+                    </div>
+
+                    {/* Statut */}
+                    <div style={{
+                      background:plat.dispo?"#052e16":"#450a0a",
+                      color:plat.dispo?"#4ade80":"#f87171",
+                      border:`1px solid ${plat.dispo?"#10b98155":"#ef444455"}`,
+                      borderRadius:8,padding:"4px 10px",fontSize:10,fontWeight:800,
+                      flexShrink:0,whiteSpace:"nowrap"
+                    }}>
+                      {plat.dispo?"✅ DISPO":"🚫 ÉPUISÉ"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
